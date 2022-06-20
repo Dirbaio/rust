@@ -898,24 +898,67 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
     }
 
     // Sets `implicitly_sized` to true on `Bounds` if necessary
-    pub(crate) fn add_implicitly_sized<'hir>(
+    pub(crate) fn add_implicit_bounds<'hir>(
         &self,
         bounds: &mut Bounds<'hir>,
         ast_bounds: &'hir [hir::GenericBound<'hir>],
         self_ty_where_predicates: Option<(hir::HirId, &'hir [hir::WherePredicate<'hir>])>,
         span: Span,
     ) {
+        self.add_implicit_bounds2(bounds, ast_bounds, self_ty_where_predicates, span, true, true)
+    }
+    // Sets `implicitly_sized` to true on `Bounds` if necessary
+    pub(crate) fn add_implicit_bounds2<'hir>(
+        &self,
+        bounds: &mut Bounds<'hir>,
+        ast_bounds: &'hir [hir::GenericBound<'hir>],
+        self_ty_where_predicates: Option<(hir::HirId, &'hir [hir::WherePredicate<'hir>])>,
+        span: Span,
+        want_sized: bool,
+        want_leak: bool,
+    ) {
         let tcx = self.tcx();
 
-        // Try to find an unbound in bounds.
-        let mut unbound = None;
+        let sized_def_id = tcx.lang_items().require(LangItem::Sized);
+        let leak_def_id = tcx.lang_items().require(LangItem::Leak);
+
+        let mut found_sized = false;
+        let mut found_leak = false;
+
+        // process all unbounds in bounds.
         let mut search_bounds = |ast_bounds: &'hir [hir::GenericBound<'hir>]| {
             for ab in ast_bounds {
                 if let hir::GenericBound::Trait(ptr, hir::TraitBoundModifier::Maybe) = ab {
-                    if unbound.is_none() {
-                        unbound = Some(&ptr.trait_ref);
-                    } else {
-                        tcx.sess.emit_err(MultipleRelaxedDefaultBounds { span });
+                    let res = ptr.trait_ref.path.res;
+
+                    let mut matched = false;
+                    if let Ok(def_id) = sized_def_id {
+                        if res == Res::Def(DefKind::Trait, def_id) {
+                            matched = true;
+
+                            if found_sized {
+                                tcx.sess.emit_err(MultipleRelaxedDefaultBounds { span });
+                            }
+                            found_sized = true;
+                        }
+                    }
+                    if let Ok(def_id) = leak_def_id {
+                        if res == Res::Def(DefKind::Trait, def_id) {
+                            matched = true;
+                            if found_leak {
+                                tcx.sess.emit_err(MultipleRelaxedDefaultBounds { span });
+                            }
+                            found_leak = true;
+                        }
+                    }
+
+                    if !matched {
+                        tcx.sess.span_warn(
+                            span,
+                            "default bound relaxed for a type parameter, but \
+                                this does nothing because the given bound is not \
+                                a default; only `?Sized` and `?Leak` are supported",
+                        );
                     }
                 }
             }
@@ -932,33 +975,12 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             }
         }
 
-        let sized_def_id = tcx.lang_items().require(LangItem::Sized);
-        match (&sized_def_id, unbound) {
-            (Ok(sized_def_id), Some(tpb))
-                if tpb.path.res == Res::Def(DefKind::Trait, *sized_def_id) =>
-            {
-                // There was in fact a `?Sized` bound, return without doing anything
-                return;
-            }
-            (_, Some(_)) => {
-                // There was a `?Trait` bound, but it was not `?Sized`; warn.
-                tcx.sess.span_warn(
-                    span,
-                    "default bound relaxed for a type parameter, but \
-                        this does nothing because the given bound is not \
-                        a default; only `?Sized` is supported",
-                );
-                // Otherwise, add implicitly sized if `Sized` is available.
-            }
-            _ => {
-                // There was no `?Sized` bound; add implicitly sized if `Sized` is available.
-            }
+        if !found_sized && want_sized {
+            bounds.implicitly_sized = Some(span);
         }
-        if sized_def_id.is_err() {
-            // No lang item for `Sized`, so we can't add it as a bound.
-            return;
+        if !found_leak && want_leak {
+            bounds.implicitly_leak = Some(span);
         }
-        bounds.implicitly_sized = Some(span);
     }
 
     /// This helper takes a *converted* parameter type (`param_ty`)

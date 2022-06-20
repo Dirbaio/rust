@@ -20,6 +20,7 @@ use crate::check::intrinsic::intrinsic_operation_unsafety;
 use crate::constrained_generic_params as cgp;
 use crate::errors;
 use crate::middle::resolve_lifetime as rl;
+use ast::IsAuto;
 use rustc_ast as ast;
 use rustc_ast::{MetaItemKind, NestedMetaItem};
 use rustc_attr::{list_contains_name, InlineAttr, InstructionSetAttr, OptimizeAttr};
@@ -1100,9 +1101,9 @@ fn super_predicates_that_define_assoc_type(
             bug!("trait_node_id {} is not an item", trait_hir_id);
         };
 
-        let (generics, bounds) = match item.kind {
-            hir::ItemKind::Trait(.., ref generics, ref supertraits, _) => (generics, supertraits),
-            hir::ItemKind::TraitAlias(ref generics, ref supertraits) => (generics, supertraits),
+        let (is_auto, generics, bounds) = match item.kind {
+            hir::ItemKind::Trait(is_auto, _, ref generics, ref supertraits, _) => (is_auto, generics, supertraits),
+            hir::ItemKind::TraitAlias(ref generics, ref supertraits) => (IsAuto::No, generics, supertraits),
             _ => span_bug!(item.span, "super_predicates invoked on non-trait"),
         };
 
@@ -1118,7 +1119,11 @@ fn super_predicates_that_define_assoc_type(
                 assoc_name,
             )
         } else {
-            <dyn AstConv<'_>>::compute_bounds(&icx, self_param_ty, bounds)
+            let mut superbounds1 = <dyn AstConv<'_>>::compute_bounds(&icx, self_param_ty, bounds);
+            if is_auto == IsAuto::No {
+                <dyn AstConv<'_>>::add_implicit_bounds2(&icx, &mut superbounds1, bounds, None, item.span, false, true);
+            }
+            superbounds1
         };
 
         let superbounds1 = superbounds1.predicates(tcx, self_param_ty);
@@ -2228,7 +2233,7 @@ fn gather_explicit_predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericP
 
                 let mut bounds = Bounds::default();
                 // Params are implicitly sized unless a `?Sized` bound is found
-                <dyn AstConv<'_>>::add_implicitly_sized(
+                <dyn AstConv<'_>>::add_implicit_bounds(
                     &icx,
                     &mut bounds,
                     &[],

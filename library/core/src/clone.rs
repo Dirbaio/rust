@@ -36,7 +36,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use crate::marker::Destruct;
+use crate::marker::{Destruct, Leak};
 
 /// A common trait for the ability to explicitly duplicate an object.
 ///
@@ -107,7 +107,7 @@ use crate::marker::Destruct;
 #[rustc_diagnostic_item = "Clone"]
 #[rustc_trivial_field_reads]
 #[cfg_attr(not(bootstrap), const_trait)]
-pub trait Clone: Sized {
+pub trait Clone: Sized + ?Leak {
     /// Returns a copy of the value.
     ///
     /// # Examples
@@ -157,7 +157,7 @@ pub macro Clone($item:item) {
     reason = "deriving hack, should not be public",
     issue = "none"
 )]
-pub struct AssertParamIsClone<T: Clone + ?Sized> {
+pub struct AssertParamIsClone<T: Clone + ?Sized + ?Leak> {
     _field: crate::marker::PhantomData<T>,
 }
 #[doc(hidden)]
@@ -167,7 +167,7 @@ pub struct AssertParamIsClone<T: Clone + ?Sized> {
     reason = "deriving hack, should not be public",
     issue = "none"
 )]
-pub struct AssertParamIsCopy<T: Copy + ?Sized> {
+pub struct AssertParamIsCopy<T: Copy + ?Sized + ?Leak> {
     _field: crate::marker::PhantomData<T>,
 }
 
@@ -177,6 +177,8 @@ pub struct AssertParamIsCopy<T: Copy + ?Sized> {
 /// are implemented in `traits::SelectionContext::copy_clone_conditions()`
 /// in `rustc_trait_selection`.
 mod impls {
+
+    use crate::marker::Leak;
 
     use super::Clone;
 
@@ -213,7 +215,7 @@ mod impls {
 
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_clone", issue = "91805")]
-    impl<T: ?Sized> const Clone for *const T {
+    impl<T: ?Sized + ?Leak> const Clone for *const T {
         #[inline]
         fn clone(&self) -> Self {
             *self
@@ -222,7 +224,7 @@ mod impls {
 
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_clone", issue = "91805")]
-    impl<T: ?Sized> const Clone for *mut T {
+    impl<T: ?Sized + ?Leak> const Clone for *mut T {
         #[inline]
         fn clone(&self) -> Self {
             *self
@@ -232,7 +234,7 @@ mod impls {
     /// Shared references can be cloned, but mutable references *cannot*!
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_clone", issue = "91805")]
-    impl<T: ?Sized> const Clone for &T {
+    impl<T: ?Sized + ?Leak> const Clone for &T {
         #[inline]
         #[rustc_diagnostic_item = "noop_method_clone"]
         fn clone(&self) -> Self {
@@ -242,5 +244,5 @@ mod impls {
 
     /// Shared references can be cloned, but mutable references *cannot*!
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<T: ?Sized> !Clone for &mut T {}
+    impl<T: ?Sized + ?Leak> !Clone for &mut T {}
 }

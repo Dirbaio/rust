@@ -829,6 +829,7 @@ symbols! {
         lateout,
         lazy_normalization_consts,
         le,
+        leak,
         len,
         let_chains,
         let_else,

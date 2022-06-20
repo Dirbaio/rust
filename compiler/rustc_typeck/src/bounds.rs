@@ -41,6 +41,8 @@ pub struct Bounds<'tcx> {
     /// is the location in the source of the `T` declaration which can
     /// be cited as the source of the `T: Sized` requirement.
     pub implicitly_sized: Option<Span>,
+
+    pub implicitly_leak: Option<Span>,
 }
 
 impl<'tcx> Bounds<'tcx> {
@@ -69,6 +71,17 @@ impl<'tcx> Bounds<'tcx> {
             })
         });
 
+        // If it could be Leak, and is, add the `Leak` predicate.
+        let leak_predicate = self.implicitly_leak.and_then(|span| {
+            tcx.lang_items().leak_trait().map(move |leak| {
+                let trait_ref = ty::Binder::dummy(ty::TraitRef {
+                    def_id: leak,
+                    substs: tcx.mk_substs_trait(param_ty, &[]),
+                });
+                (trait_ref.without_const().to_predicate(tcx), span)
+            })
+        });
+
         let region_preds = self.region_bounds.iter().map(move |&(region_bound, span)| {
             let pred = region_bound
                 .map_bound(|region_bound| ty::OutlivesPredicate(param_ty, region_bound))
@@ -85,6 +98,11 @@ impl<'tcx> Bounds<'tcx> {
             .iter()
             .map(move |&(projection, span)| (projection.to_predicate(tcx), span));
 
-        sized_predicate.into_iter().chain(region_preds).chain(trait_bounds).chain(projection_bounds)
+        sized_predicate
+            .into_iter()
+            .chain(leak_predicate.into_iter())
+            .chain(region_preds)
+            .chain(trait_bounds)
+            .chain(projection_bounds)
     }
 }

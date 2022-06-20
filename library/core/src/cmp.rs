@@ -22,6 +22,8 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use crate::marker::Leak;
+
 use self::Ordering::*;
 
 /// Trait for equality comparisons which are [partial equivalence
@@ -216,7 +218,7 @@ use self::Ordering::*;
 )]
 #[cfg_attr(not(bootstrap), const_trait)]
 #[rustc_diagnostic_item = "PartialEq"]
-pub trait PartialEq<Rhs: ?Sized = Self> {
+pub trait PartialEq<Rhs: ?Sized + ?Leak = Self>: ?Leak {
     /// This method tests for `self` and `other` values to be equal, and is used
     /// by `==`.
     #[must_use]
@@ -284,7 +286,7 @@ pub macro PartialEq($item:item) {
 #[doc(alias = "!=")]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_diagnostic_item = "Eq"]
-pub trait Eq: PartialEq<Self> {
+pub trait Eq: PartialEq<Self> + ?Leak {
     // this method is used solely by #[deriving] to assert
     // that every component of a type implements #[deriving]
     // itself, the current deriving infrastructure means doing this
@@ -314,7 +316,7 @@ pub macro Eq($item:item) {
 #[doc(hidden)]
 #[allow(missing_debug_implementations)]
 #[unstable(feature = "derive_eq", reason = "deriving hack, should not be public", issue = "none")]
-pub struct AssertParamIsEq<T: Eq + ?Sized> {
+pub struct AssertParamIsEq<T: Eq + ?Sized + ?Leak> {
     _field: crate::marker::PhantomData<T>,
 }
 
@@ -762,7 +764,7 @@ impl<T: Clone> Clone for Reverse<T> {
 #[doc(alias = ">=")]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_diagnostic_item = "Ord"]
-pub trait Ord: Eq + PartialOrd<Self> {
+pub trait Ord: Eq + PartialOrd<Self> + ?Leak  {
     /// This method returns an [`Ordering`] between `self` and `other`.
     ///
     /// By convention, `self.cmp(&other)` returns the ordering matching the expression
@@ -1056,7 +1058,7 @@ impl PartialOrd for Ordering {
 )]
 #[cfg_attr(not(bootstrap), const_trait)]
 #[rustc_diagnostic_item = "PartialOrd"]
-pub trait PartialOrd<Rhs: ?Sized = Self>: PartialEq<Rhs> {
+pub trait PartialOrd<Rhs: ?Sized + ?Leak = Self>: PartialEq<Rhs> + ?Leak  {
     /// This method returns an ordering between `self` and `other` values if one exists.
     ///
     /// # Examples
@@ -1212,7 +1214,7 @@ pub fn min<T: Ord>(v1: T, v2: T) -> T {
 #[inline]
 #[must_use]
 #[stable(feature = "cmp_min_max_by", since = "1.53.0")]
-pub fn min_by<T, F: FnOnce(&T, &T) -> Ordering>(v1: T, v2: T, compare: F) -> T {
+pub fn min_by<T: ?Leak, F: FnOnce(&T, &T) -> Ordering>(v1: T, v2: T, compare: F) -> T {
     match compare(&v1, &v2) {
         Ordering::Less | Ordering::Equal => v1,
         Ordering::Greater => v2,
@@ -1275,7 +1277,7 @@ pub fn max<T: Ord>(v1: T, v2: T) -> T {
 #[inline]
 #[must_use]
 #[stable(feature = "cmp_min_max_by", since = "1.53.0")]
-pub fn max_by<T, F: FnOnce(&T, &T) -> Ordering>(v1: T, v2: T, compare: F) -> T {
+pub fn max_by<T: ?Leak, F: FnOnce(&T, &T) -> Ordering>(v1: T, v2: T, compare: F) -> T {
     match compare(&v1, &v2) {
         Ordering::Less | Ordering::Equal => v2,
         Ordering::Greater => v1,
@@ -1297,7 +1299,7 @@ pub fn max_by<T, F: FnOnce(&T, &T) -> Ordering>(v1: T, v2: T, compare: F) -> T {
 #[inline]
 #[must_use]
 #[stable(feature = "cmp_min_max_by", since = "1.53.0")]
-pub fn max_by_key<T, F: FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f: F) -> T {
+pub fn max_by_key<T: ?Leak, F: FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f: F) -> T {
     max_by(v1, v2, |v1, v2| f(v1).cmp(&f(v2)))
 }
 
@@ -1305,6 +1307,7 @@ pub fn max_by_key<T, F: FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f: F) -> T {
 mod impls {
     use crate::cmp::Ordering::{self, Equal, Greater, Less};
     use crate::hint::unreachable_unchecked;
+    use crate::marker::Leak;
 
     macro_rules! partial_eq_impl {
         ($($t:ty)*) => ($(
@@ -1472,7 +1475,7 @@ mod impls {
     // & pointers
 
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized, B: ?Sized> PartialEq<&B> for &A
+    impl<A: ?Sized + ?Leak, B: ?Sized + ?Leak> PartialEq<&B> for &A
     where
         A: PartialEq<B>,
     {
@@ -1486,7 +1489,7 @@ mod impls {
         }
     }
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized, B: ?Sized> PartialOrd<&B> for &A
+    impl<A: ?Sized + ?Leak, B: ?Sized + ?Leak> PartialOrd<&B> for &A
     where
         A: PartialOrd<B>,
     {
@@ -1512,7 +1515,7 @@ mod impls {
         }
     }
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized> Ord for &A
+    impl<A: ?Sized + ?Leak> Ord for &A
     where
         A: Ord,
     {
@@ -1522,12 +1525,12 @@ mod impls {
         }
     }
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized> Eq for &A where A: Eq {}
+    impl<A: ?Sized + ?Leak> Eq for &A where A: Eq {}
 
     // &mut pointers
 
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized, B: ?Sized> PartialEq<&mut B> for &mut A
+    impl<A: ?Sized + ?Leak, B: ?Sized + ?Leak> PartialEq<&mut B> for &mut A
     where
         A: PartialEq<B>,
     {
@@ -1541,7 +1544,7 @@ mod impls {
         }
     }
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized, B: ?Sized> PartialOrd<&mut B> for &mut A
+    impl<A: ?Sized + ?Leak, B: ?Sized + ?Leak> PartialOrd<&mut B> for &mut A
     where
         A: PartialOrd<B>,
     {
@@ -1567,7 +1570,7 @@ mod impls {
         }
     }
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized> Ord for &mut A
+    impl<A: ?Sized + ?Leak> Ord for &mut A
     where
         A: Ord,
     {
@@ -1577,10 +1580,10 @@ mod impls {
         }
     }
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized> Eq for &mut A where A: Eq {}
+    impl<A: ?Sized + ?Leak> Eq for &mut A where A: Eq {}
 
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized, B: ?Sized> PartialEq<&mut B> for &A
+    impl<A: ?Sized + ?Leak, B: ?Sized + ?Leak> PartialEq<&mut B> for &A
     where
         A: PartialEq<B>,
     {
@@ -1595,7 +1598,7 @@ mod impls {
     }
 
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<A: ?Sized, B: ?Sized> PartialEq<&B> for &mut A
+    impl<A: ?Sized + ?Leak, B: ?Sized + ?Leak> PartialEq<&B> for &mut A
     where
         A: PartialEq<B>,
     {

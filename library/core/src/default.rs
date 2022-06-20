@@ -2,6 +2,8 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use crate::marker::Leak;
+
 /// A trait for giving a type a useful default value.
 ///
 /// Sometimes, you want to fall back to some kind of default value, and
@@ -99,7 +101,7 @@
 /// ```
 #[cfg_attr(not(test), rustc_diagnostic_item = "Default")]
 #[stable(feature = "rust1", since = "1.0.0")]
-pub trait Default: Sized {
+pub trait Default: Sized + ?Leak {
     /// Returns the "default value" for a type.
     ///
     /// Default values are often some kind of initial value, identity value, or anything else that

@@ -40,19 +40,19 @@ pub unsafe auto trait Send {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: ?Sized> !Send for *const T {}
+impl<T: ?Sized + ?Leak> !Send for *const T {}
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: ?Sized> !Send for *mut T {}
+impl<T: ?Sized + ?Leak> !Send for *mut T {}
 
 /// Types with a constant size known at compile time.
 ///
 /// All type parameters have an implicit bound of `Sized`. The special syntax
-/// `?Sized` can be used to remove this bound if it's not appropriate.
+/// `?Sized + ?Leak` can be used to remove this bound if it's not appropriate.
 ///
 /// ```
 /// # #![allow(dead_code)]
 /// struct Foo<T>(T);
-/// struct Bar<T: ?Sized>(T);
+/// struct Bar<T: ?Sized + ?Leak>(T);
 ///
 /// // struct FooUse(Foo<[i32]>); // error: Sized is not implemented for [i32]
 /// struct BarUse(Bar<[i32]>); // OK
@@ -89,7 +89,7 @@ impl<T: ?Sized> !Send for *mut T {}
 )]
 #[fundamental] // for Default, for example, which requires that `[T]: !Default` be evaluatable
 #[rustc_specialization_trait]
-pub trait Sized {
+pub trait Sized: ?Leak {
     // Empty.
 }
 
@@ -120,7 +120,7 @@ pub trait Sized {
 /// [nomicon-coerce]: ../../nomicon/coercions.html
 #[unstable(feature = "unsize", issue = "27732")]
 #[lang = "unsize"]
-pub trait Unsize<T: ?Sized> {
+pub trait Unsize<T: ?Sized + ?Leak>: ?Leak {
     // Empty.
 }
 
@@ -147,7 +147,7 @@ pub trait Unsize<T: ?Sized> {
 #[unstable(feature = "structural_match", issue = "31434")]
 #[rustc_on_unimplemented(message = "the type `{Self}` does not `#[derive(PartialEq)]`")]
 #[lang = "structural_peq"]
-pub trait StructuralPartialEq {
+pub trait StructuralPartialEq: ?Leak {
     // Empty.
 }
 
@@ -200,7 +200,7 @@ pub trait StructuralPartialEq {
 #[unstable(feature = "structural_match", issue = "31434")]
 #[rustc_on_unimplemented(message = "the type `{Self}` does not `#[derive(Eq)]`")]
 #[lang = "structural_teq"]
-pub trait StructuralEq {
+pub trait StructuralEq: ?Leak {
     // Empty.
 }
 
@@ -379,7 +379,7 @@ pub trait StructuralEq {
 // library, and there's no way to safely have this behavior right now.
 #[rustc_unsafe_specialization_marker]
 #[rustc_diagnostic_item = "Copy"]
-pub trait Copy: Clone {
+pub trait Copy: Clone + ?Leak {
     // Empty.
 }
 
@@ -478,9 +478,9 @@ pub unsafe auto trait Sync {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: ?Sized> !Sync for *const T {}
+impl<T: ?Sized + ?Leak> !Sync for *const T {}
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: ?Sized> !Sync for *mut T {}
+impl<T: ?Sized + ?Leak> !Sync for *mut T {}
 
 macro_rules! impls {
     ($t: ident) => {
@@ -491,34 +491,34 @@ macro_rules! impls {
         }
 
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl<T: ?Sized> cmp::PartialEq for $t<T> {
+        impl<T: ?Sized + ?Leak> cmp::PartialEq for $t<T> {
             fn eq(&self, _other: &$t<T>) -> bool {
                 true
             }
         }
 
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl<T: ?Sized> cmp::Eq for $t<T> {}
+        impl<T: ?Sized + ?Leak> cmp::Eq for $t<T> {}
 
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl<T: ?Sized> cmp::PartialOrd for $t<T> {
+        impl<T: ?Sized + ?Leak> cmp::PartialOrd for $t<T> {
             fn partial_cmp(&self, _other: &$t<T>) -> Option<cmp::Ordering> {
                 Option::Some(cmp::Ordering::Equal)
             }
         }
 
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl<T: ?Sized> cmp::Ord for $t<T> {
+        impl<T: ?Sized + ?Leak> cmp::Ord for $t<T> {
             fn cmp(&self, _other: &$t<T>) -> cmp::Ordering {
                 cmp::Ordering::Equal
             }
         }
 
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl<T: ?Sized> Copy for $t<T> {}
+        impl<T: ?Sized + ?Leak> Copy for $t<T> {}
 
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl<T: ?Sized> Clone for $t<T> {
+        impl<T: ?Sized + ?Leak> Clone for $t<T> {
             fn clone(&self) -> Self {
                 Self
             }
@@ -526,17 +526,17 @@ macro_rules! impls {
 
         #[stable(feature = "rust1", since = "1.0.0")]
         #[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
-        impl<T: ?Sized> const Default for $t<T> {
+        impl<T: ?Sized + ?Leak> const Default for $t<T> {
             fn default() -> Self {
                 Self
             }
         }
 
         #[unstable(feature = "structural_match", issue = "31434")]
-        impl<T: ?Sized> StructuralPartialEq for $t<T> {}
+        impl<T: ?Sized + ?Leak> StructuralPartialEq for $t<T> {}
 
         #[unstable(feature = "structural_match", issue = "31434")]
-        impl<T: ?Sized> StructuralEq for $t<T> {}
+        impl<T: ?Sized + ?Leak> StructuralEq for $t<T> {}
     };
 }
 
@@ -675,15 +675,16 @@ macro_rules! impls {
 /// [drop check]: ../../nomicon/dropck.html
 #[lang = "phantom_data"]
 #[stable(feature = "rust1", since = "1.0.0")]
-pub struct PhantomData<T: ?Sized>;
+pub struct PhantomData<T: ?Sized + ?Leak>;
 
 impls! { PhantomData }
 
 mod impls {
+    use super::Leak;
     #[stable(feature = "rust1", since = "1.0.0")]
-    unsafe impl<T: Sync + ?Sized> Send for &T {}
+    unsafe impl<T: Sync + ?Sized + ?Leak> Send for &T {}
     #[stable(feature = "rust1", since = "1.0.0")]
-    unsafe impl<T: Send + ?Sized> Send for &mut T {}
+    unsafe impl<T: Send + ?Sized + ?Leak> Send for &mut T {}
 }
 
 /// Compiler-internal trait used to indicate the type of enum discriminants.
@@ -713,12 +714,12 @@ pub trait DiscriminantKind {
 #[lang = "freeze"]
 pub(crate) unsafe auto trait Freeze {}
 
-impl<T: ?Sized> !Freeze for UnsafeCell<T> {}
-unsafe impl<T: ?Sized> Freeze for PhantomData<T> {}
-unsafe impl<T: ?Sized> Freeze for *const T {}
-unsafe impl<T: ?Sized> Freeze for *mut T {}
-unsafe impl<T: ?Sized> Freeze for &T {}
-unsafe impl<T: ?Sized> Freeze for &mut T {}
+impl<T: ?Sized + ?Leak> !Freeze for UnsafeCell<T> {}
+unsafe impl<T: ?Sized + ?Leak> Freeze for PhantomData<T> {}
+unsafe impl<T: ?Sized + ?Leak> Freeze for *const T {}
+unsafe impl<T: ?Sized + ?Leak> Freeze for *mut T {}
+unsafe impl<T: ?Sized + ?Leak> Freeze for &T {}
+unsafe impl<T: ?Sized + ?Leak> Freeze for &mut T {}
 
 /// Types that can be safely moved after being pinned.
 ///
@@ -780,16 +781,16 @@ pub struct PhantomPinned;
 impl !Unpin for PhantomPinned {}
 
 #[stable(feature = "pin", since = "1.33.0")]
-impl<'a, T: ?Sized + 'a> Unpin for &'a T {}
+impl<'a, T: ?Sized + ?Leak + 'a> Unpin for &'a T {}
 
 #[stable(feature = "pin", since = "1.33.0")]
-impl<'a, T: ?Sized + 'a> Unpin for &'a mut T {}
+impl<'a, T: ?Sized + ?Leak + 'a> Unpin for &'a mut T {}
 
 #[stable(feature = "pin_raw", since = "1.38.0")]
-impl<T: ?Sized> Unpin for *const T {}
+impl<T: ?Sized + ?Leak> Unpin for *const T {}
 
 #[stable(feature = "pin_raw", since = "1.38.0")]
-impl<T: ?Sized> Unpin for *mut T {}
+impl<T: ?Sized + ?Leak> Unpin for *mut T {}
 
 /// A marker for types that can be dropped.
 ///
@@ -807,7 +808,7 @@ pub trait Destruct {}
 /// in `rustc_trait_selection`.
 mod copy_impls {
 
-    use super::Copy;
+    use super::{Copy, Leak};
 
     macro_rules! impl_copy {
         ($($t:ty)*) => {
@@ -829,12 +830,61 @@ mod copy_impls {
     impl Copy for ! {}
 
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<T: ?Sized> Copy for *const T {}
+    impl<T: ?Sized + ?Leak> Copy for *const T {}
 
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<T: ?Sized> Copy for *mut T {}
+    impl<T: ?Sized + ?Leak> Copy for *mut T {}
 
     /// Shared references can be copied, but mutable references *cannot*!
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl<T: ?Sized> Copy for &T {}
+    impl<T: ?Sized + ?Leak> Copy for &T {}
+}
+
+/// Types that can be safely leaked.
+#[unstable(feature = "leak", issue = "none")]
+#[cfg_attr(not(bootstrap), lang = "leak")]
+#[fundamental]
+#[rustc_specialization_trait]
+pub unsafe auto trait Leak {
+    // Empty
+}
+
+/// A marker type which does not implement Leak.
+///
+/// If a type contains `PhantomNotLeak`, it will not implement `Leak` by default.
+#[unstable(feature = "leak", issue = "none")]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct PhantomNotLeak;
+
+#[unstable(feature = "leak", issue = "none")]
+impl !Leak for PhantomNotLeak {}
+
+#[unstable(feature = "leak", issue = "none")]
+#[cfg(not(bootstrap))]
+mod leak_impls {
+    use super::Leak;
+
+    macro_rules! impl_leak {
+        ($($t:ty)*) => {
+            $(
+                unsafe impl Leak for $t {}
+            )*
+        }
+    }
+
+    impl_leak! {
+        usize u8 u16 u32 u64 u128
+        isize i8 i16 i32 i64 i128
+        f32 f64
+        bool char
+    }
+
+    #[unstable(feature = "never_type", issue = "35121")]
+    unsafe impl Leak for ! {}
+    unsafe impl<T: ?Sized + ?Leak> Leak for *const T {}
+    unsafe impl<T: ?Sized + ?Leak> Leak for *mut T {}
+    unsafe impl<T: ?Sized + ?Leak> Leak for &T {}
+    unsafe impl<T: ?Sized + ?Leak> Leak for &mut T {}
+    unsafe impl Leak for str {}
+    unsafe impl<T: Leak> Leak for [T] {}
 }

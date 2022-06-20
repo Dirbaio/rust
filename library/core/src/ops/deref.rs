@@ -1,3 +1,5 @@
+use crate::marker::Leak;
+
 /// Used for immutable dereferencing operations, like `*v`.
 ///
 /// In addition to being used for explicit dereferencing operations with the
@@ -193,7 +195,7 @@ pub trait Receiver {
 }
 
 #[unstable(feature = "receiver_trait", issue = "none")]
-impl<T: ?Sized> Receiver for &T {}
+impl<T: ?Sized + ?Leak> Receiver for &T {}
 
 #[unstable(feature = "receiver_trait", issue = "none")]
-impl<T: ?Sized> Receiver for &mut T {}
+impl<T: ?Sized + ?Leak> Receiver for &mut T {}
