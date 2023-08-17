@@ -12,6 +12,7 @@ use super::Selection;
 use super::SelectionContext;
 use super::SelectionError;
 use super::{Normalized, NormalizedTy, ProjectionCacheEntry, ProjectionCacheKey};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_middle::traits::BuiltinImplSource;
 use rustc_middle::traits::ImplSource;
 use rustc_middle::traits::ImplSourceUserDefinedData;
@@ -437,6 +438,7 @@ struct AssocTypeNormalizer<'a, 'b, 'tcx> {
     /// variable will be created and an obligation registered to project to that
     /// inference variable. Also, constants will be eagerly evaluated.
     eager_inference_replacement: bool,
+    cache: FxHashMap<Ty<'tcx>, Ty<'tcx>>,
 }
 
 impl<'a, 'b, 'tcx> AssocTypeNormalizer<'a, 'b, 'tcx> {
@@ -456,6 +458,7 @@ impl<'a, 'b, 'tcx> AssocTypeNormalizer<'a, 'b, 'tcx> {
             depth,
             universes: vec![],
             eager_inference_replacement: true,
+            cache: FxHashMap::default(),
         }
     }
 
@@ -474,6 +477,7 @@ impl<'a, 'b, 'tcx> AssocTypeNormalizer<'a, 'b, 'tcx> {
             depth,
             universes: vec![],
             eager_inference_replacement: false,
+            cache: FxHashMap::default(),
         }
     }
 
@@ -509,10 +513,18 @@ impl<'a, 'b, 'tcx> TypeFolder<TyCtxt<'tcx>> for AssocTypeNormalizer<'a, 'b, 'tcx
         t
     }
 
+    #[instrument(skip(self))]
     fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
         if !needs_normalization(&ty, self.param_env.reveal()) {
             return ty;
         }
+
+        if let Some(&res) = self.cache.get(&ty) {
+            debug!("CACHE HIT");
+            return res;
+        }
+
+        debug!("CACHE MISS");
 
         let (kind, data) = match *ty.kind() {
             ty::Alias(kind, alias_ty) => (kind, alias_ty),
@@ -541,8 +553,7 @@ impl<'a, 'b, 'tcx> TypeFolder<TyCtxt<'tcx>> for AssocTypeNormalizer<'a, 'b, 'tcx
         // On the other hand, this does add a bit of complexity, since we only
         // replace bound vars if the current type is a `Projection` and we need
         // to make sure we don't forget to fold the args regardless.
-
-        match kind {
+        let res = match kind {
             ty::Opaque => {
                 // Only normalize `impl Trait` outside of type inference, usually in codegen.
                 match self.param_env.reveal() {
@@ -725,7 +736,10 @@ impl<'a, 'b, 'tcx> TypeFolder<TyCtxt<'tcx>> for AssocTypeNormalizer<'a, 'b, 'tcx
                     ty,
                 )
             }
-        }
+        };
+
+        self.cache.insert(ty, res);
+        res
     }
 
     #[instrument(skip(self), level = "debug")]
