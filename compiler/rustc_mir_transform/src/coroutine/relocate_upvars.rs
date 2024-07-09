@@ -295,6 +295,7 @@ fn insert_substitution_prologue<'tcx>(
                     bug!()
                 }
             }
+            TerminatorKind::TailCall { .. } => {}
             TerminatorKind::FalseEdge { real_target, imaginary_target } => {
                 if *real_target == START_BLOCK {
                     *real_target = prologue;
