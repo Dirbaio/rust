@@ -1,9 +1,8 @@
 use hir::def_id::DefId;
 use rustc_hir as hir;
-use rustc_index::bit_set::BitSet;
 use rustc_index::{IndexSlice, IndexVec};
 use rustc_middle::bug;
-use rustc_middle::mir::{CoroutineLayout, CoroutineSavedLocal};
+use rustc_middle::mir::CoroutineSavedLocal;
 use rustc_middle::query::Providers;
 use rustc_middle::ty::layout::{
     FloatExt, IntegerExt, LayoutCx, LayoutError, LayoutOf, TyAndLayout, MAX_SIMD_LANES,
@@ -17,10 +16,10 @@ use rustc_session::{DataTypeKind, FieldInfo, FieldKind, SizeKind, VariantInfo};
 use rustc_span::sym;
 use rustc_span::symbol::Symbol;
 use rustc_target::abi::*;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument};
 
-use std::fmt::Debug;
-use std::iter;
+use std::collections::BTreeSet;
+use std::ops::Range;
 
 use crate::errors::{
     MultipleArrayFieldsSimdType, NonPrimitiveSimdType, OversizedSimdType, ZeroLengthSimdType,
@@ -680,151 +679,20 @@ fn layout_of_uncached<'tcx>(
     })
 }
 
-/// Overlap eligibility and variant assignment for each CoroutineSavedLocal.
-#[derive(Clone, Debug, PartialEq)]
-enum SavedLocalEligibility {
-    Unassigned,
-    Assigned(VariantIdx),
-    Ineligible(Option<FieldIdx>),
-}
-
-// When laying out coroutines, we divide our saved local fields into two
-// categories: overlap-eligible and overlap-ineligible.
-//
-// Those fields which are ineligible for overlap go in a "prefix" at the
-// beginning of the layout, and always have space reserved for them.
-//
-// Overlap-eligible fields are only assigned to one variant, so we lay
-// those fields out for each variant and put them right after the
-// prefix.
-//
-// Finally, in the layout details, we point to the fields from the
-// variants they are assigned to. It is possible for some fields to be
-// included in multiple variants. No field ever "moves around" in the
-// layout; its offset is always the same.
-//
-// Also included in the layout are the upvars and the discriminant.
-// These are included as fields on the "outer" layout; they are not part
-// of any variant.
-
-/// Compute the eligibility and assignment of each local.
-fn coroutine_saved_local_eligibility(
-    info: &CoroutineLayout<'_>,
-) -> (BitSet<CoroutineSavedLocal>, IndexVec<CoroutineSavedLocal, SavedLocalEligibility>) {
-    use SavedLocalEligibility::*;
-
-    let mut assignments: IndexVec<CoroutineSavedLocal, SavedLocalEligibility> =
-        IndexVec::from_elem(Unassigned, &info.field_tys);
-
-    // The saved locals not eligible for overlap. These will get
-    // "promoted" to the prefix of our coroutine.
-    let mut ineligible_locals = BitSet::new_empty(info.field_tys.len());
-
-    // Figure out which of our saved locals are fields in only
-    // one variant. The rest are deemed ineligible for overlap.
-    for (variant_index, fields) in info.variant_fields.iter_enumerated() {
-        for local in fields {
-            match assignments[*local] {
-                Unassigned => {
-                    assignments[*local] = Assigned(variant_index);
-                }
-                Assigned(idx) => {
-                    // We've already seen this local at another suspension
-                    // point, so it is no longer a candidate.
-                    trace!(
-                        "removing local {:?} in >1 variant ({:?}, {:?})",
-                        local,
-                        variant_index,
-                        idx
-                    );
-                    ineligible_locals.insert(*local);
-                    assignments[*local] = Ineligible(None);
-                }
-                Ineligible(_) => {}
-            }
-        }
-    }
-
-    // Next, check every pair of eligible locals to see if they
-    // conflict.
-    for local_a in info.storage_conflicts.rows() {
-        let conflicts_a = info.storage_conflicts.count(local_a);
-        if ineligible_locals.contains(local_a) {
-            continue;
-        }
-
-        for local_b in info.storage_conflicts.iter(local_a) {
-            // local_a and local_b are storage live at the same time, therefore they
-            // cannot overlap in the coroutine layout. The only way to guarantee
-            // this is if they are in the same variant, or one is ineligible
-            // (which means it is stored in every variant).
-            if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
-                continue;
-            }
-
-            // If they conflict, we will choose one to make ineligible.
-            // This is not always optimal; it's just a greedy heuristic that
-            // seems to produce good results most of the time.
-            let conflicts_b = info.storage_conflicts.count(local_b);
-            let (remove, other) =
-                if conflicts_a > conflicts_b { (local_a, local_b) } else { (local_b, local_a) };
-            ineligible_locals.insert(remove);
-            assignments[remove] = Ineligible(None);
-            trace!("removing local {:?} due to conflict with {:?}", remove, other);
-        }
-    }
-
-    // Count the number of variants in use. If only one of them, then it is
-    // impossible to overlap any locals in our layout. In this case it's
-    // always better to make the remaining locals ineligible, so we can
-    // lay them out with the other locals in the prefix and eliminate
-    // unnecessary padding bytes.
-    {
-        let mut used_variants = BitSet::new_empty(info.variant_fields.len());
-        for assignment in &assignments {
-            if let Assigned(idx) = assignment {
-                used_variants.insert(*idx);
-            }
-        }
-        if used_variants.count() < 2 {
-            for assignment in assignments.iter_mut() {
-                *assignment = Ineligible(None);
-            }
-            ineligible_locals.insert_all();
-        }
-    }
-
-    // Write down the order of our locals that will be promoted to the prefix.
-    {
-        for (idx, local) in ineligible_locals.iter().enumerate() {
-            assignments[local] = Ineligible(Some(FieldIdx::from_usize(idx)));
-        }
-    }
-    debug!("coroutine saved local assignments: {:?}", assignments);
-
-    (ineligible_locals, assignments)
-}
-
 /// Compute the full coroutine layout.
+#[tracing::instrument(level = "info", skip(cx))]
 fn coroutine_layout<'tcx>(
     cx: &LayoutCx<'tcx, TyCtxt<'tcx>>,
     ty: Ty<'tcx>,
     def_id: hir::def_id::DefId,
     args: GenericArgsRef<'tcx>,
 ) -> Result<Layout<'tcx>, &'tcx LayoutError<'tcx>> {
-    use SavedLocalEligibility::*;
     let tcx = cx.tcx;
     let instantiate_field = |ty: Ty<'tcx>| EarlyBinder::bind(ty).instantiate(tcx, args);
 
     let Some(info) = tcx.coroutine_layout(def_id, args.as_coroutine().kind_ty()) else {
         return Err(error(cx, LayoutError::Unknown(ty)));
     };
-    let (ineligible_locals, assignments) = coroutine_saved_local_eligibility(info);
-
-    // Build a prefix layout, including "promoting" all ineligible
-    // locals as part of the prefix. We compute the layout of all of
-    // these fields at once to get optimal packing.
-    let tag_index = 0;
 
     // `info.variant_fields` already accounts for the reserved variants, so no need to add them.
     let max_discr = (info.variant_fields.len() - 1) as u128;
@@ -835,165 +703,138 @@ fn coroutine_layout<'tcx>(
     };
     let tag_layout = cx.tcx.mk_layout(LayoutS::scalar(cx, tag));
 
-    let promoted_layouts = ineligible_locals.iter().map(|local| {
-        let field_ty = instantiate_field(info.field_tys[local].ty);
-        let uninit_ty = Ty::new_maybe_uninit(tcx, field_ty);
-        Ok(cx.spanned_layout_of(uninit_ty, info.field_tys[local].source_info.span)?.layout)
-    });
-    let prefix_layouts: IndexVec<_, _> =
-        [Ok(tag_layout)].into_iter().chain(promoted_layouts).try_collect()?;
-    let prefix = univariant_uninterned(
-        cx,
-        ty,
-        &prefix_layouts,
-        &ReprOptions::default(),
-        StructKind::AlwaysSized,
-    )?;
+    let mut field_layouts: IndexVec<CoroutineSavedLocal, _> = info
+        .field_tys
+        .iter()
+        .map(|field| {
+            let field_ty = instantiate_field(field.ty);
+            let uninit_ty = Ty::new_maybe_uninit(tcx, field_ty);
+            Ok(cx.spanned_layout_of(uninit_ty, field.source_info.span)?.layout)
+        })
+        .try_collect()?;
 
-    let (prefix_size, prefix_align) = (prefix.size, prefix.align);
+    // Add the tag as another field. Remember its index to treat it specially later.
+    let tag_idx = CoroutineSavedLocal::from_usize(field_layouts.len());
+    field_layouts.push(tag_layout);
 
-    // Split the prefix layout into the discriminant and
-    // the "promoted" fields.
-    // Promoted fields will get included in each variant
-    // that requested them in CoroutineLayout.
-    debug!("prefix = {:#?}", prefix);
-    let (outer_fields, promoted_offsets, promoted_memory_index) = match prefix.fields {
-        FieldsShape::Arbitrary { mut offsets, memory_index } => {
-            let mut inverse_memory_index = memory_index.invert_bijective_mapping();
-
-            // "a" (`0..b_start`) and "b" (`b_start..`) correspond to
-            // "outer" and "promoted" fields respectively.
-            let b_start = FieldIdx::from_usize(tag_index + 1);
-            let offsets_b = IndexVec::from_raw(offsets.raw.split_off(b_start.as_usize()));
-            let offsets_a = offsets;
-
-            // Disentangle the "a" and "b" components of `inverse_memory_index`
-            // by preserving the order but keeping only one disjoint "half" each.
-            // FIXME(eddyb) build a better abstraction for permutations, if possible.
-            let inverse_memory_index_b: IndexVec<u32, FieldIdx> = inverse_memory_index
-                .iter()
-                .filter_map(|&i| i.as_u32().checked_sub(b_start.as_u32()).map(FieldIdx::from_u32))
-                .collect();
-            inverse_memory_index.raw.retain(|&i| i < b_start);
-            let inverse_memory_index_a = inverse_memory_index;
-
-            // Since `inverse_memory_index_{a,b}` each only refer to their
-            // respective fields, they can be safely inverted
-            let memory_index_a = inverse_memory_index_a.invert_bijective_mapping();
-            let memory_index_b = inverse_memory_index_b.invert_bijective_mapping();
-
-            let outer_fields =
-                FieldsShape::Arbitrary { offsets: offsets_a, memory_index: memory_index_a };
-            (outer_fields, offsets_b, memory_index_b)
+    let conflicts = |a: CoroutineSavedLocal, b: CoroutineSavedLocal| -> bool {
+        if a == tag_idx || b == tag_idx {
+            // the tag conflicts with all other fields.
+            true
+        } else {
+            info.storage_conflicts.contains(a, b)
         }
-        _ => bug!(),
     };
 
-    let mut size = prefix.size;
-    let mut align = prefix.align;
+    fn overlaps(a: &Range<Size>, b: &Range<Size>) -> bool {
+        !(a.end <= b.start || b.end <= a.start)
+    }
+
+    // Priority for placing fields. Lower value means higher priority.
+    // The heuristic is we try to place bigger fields first.
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    struct Priority(i64);
+    let priority =
+        |i: CoroutineSavedLocal| -> Priority { Priority(-(field_layouts[i].size.bytes() as i64)) };
+
+    let field_count = field_layouts.len();
+    // Whether a field is already placed or not.
+    let mut placed: IndexVec<CoroutineSavedLocal, bool> = IndexVec::from_elem_n(false, field_count);
+    // Offsets of fields.
+    // If a field is placed (placed[i] = true), this is the final offset of the field.
+    // If a field is not placed yet, lowest offset we can place a given field at, taking
+    // into account conflicts all the fields we've placed so far.
+    // Initially all fields are possible to place at offset zero.
+    let mut offsets: IndexVec<CoroutineSavedLocal, Size> =
+        IndexVec::from_elem_n(Size::ZERO, field_count);
+    // Priority queue of fields we haven't placed yet.
+    // Value is (lowest possible offset, priority, field index).
+    let mut queue: BTreeSet<(Size, Priority, CoroutineSavedLocal)> = BTreeSet::new();
+    for idx in field_layouts.indices() {
+        queue.insert((Size::ZERO, priority(idx), idx));
+    }
+
+    while let Some((a_offs, _, a_idx)) = queue.pop_first() {
+        // mark the field as placed.
+        placed[a_idx] = true;
+        tracing::info!("placed {:?} at {:?}", a_idx, a_offs);
+        // for all the fields we haven't placed yet, if they conflict with the one we just placed,
+        // update their lowest possible offset.
+        let a_range = a_offs..(a_offs + field_layouts[a_idx].size);
+        for b_idx in field_layouts.indices() {
+            if !placed[b_idx] && conflicts(a_idx, b_idx) {
+                let b_offs = offsets[b_idx];
+                let b_layout = field_layouts[b_idx];
+                let b_range = b_offs..(b_offs + b_layout.size);
+
+                if overlaps(&a_range, &b_range) {
+                    let b_offs_new = a_range.end.align_to(b_layout.align.abi);
+                    assert!(queue.remove(&(b_offs, priority(b_idx), b_idx)));
+                    queue.insert((b_offs_new, priority(b_idx), b_idx));
+                    offsets[b_idx] = b_offs_new;
+                    tracing::info!("bumped {:?} from {:?} to {:?}", b_idx, b_offs, b_offs_new);
+                }
+            }
+        }
+    }
+
+    // coroutine size/align.
+    let mut size = offsets[tag_idx] + field_layouts[tag_idx].size;
+    let mut align = field_layouts[tag_idx].align;
+
     let variants = info
         .variant_fields
         .iter_enumerated()
         .map(|(index, variant_fields)| {
-            // Only include overlap-eligible fields when we compute our variant layout.
-            let variant_only_tys = variant_fields
-                .iter()
-                .filter(|local| match assignments[**local] {
-                    Unassigned => bug!(),
-                    Assigned(v) if v == index => true,
-                    Assigned(_) => bug!("assignment does not match variant"),
-                    Ineligible(_) => false,
-                })
-                .map(|local| {
-                    let field_ty = instantiate_field(info.field_tys[*local].ty);
-                    Ty::new_maybe_uninit(tcx, field_ty)
-                });
+            let variant_offsets: IndexVec<FieldIdx, Size> =
+                variant_fields.iter().map(|&i| offsets[i]).collect();
+            let memory_index = (0..(variant_offsets.len() as u32)).collect(); // TODO
 
-            let mut variant = univariant_uninterned(
-                cx,
-                ty,
-                &variant_only_tys
-                    .map(|ty| Ok(cx.layout_of(ty)?.layout))
-                    .try_collect::<IndexVec<_, _>>()?,
-                &ReprOptions::default(),
-                StructKind::Prefixed(prefix_size, prefix_align.abi),
-            )?;
-            variant.variants = Variants::Single { index };
+            // Calc variant size/align from its fields.
+            let mut variant_size = Size::ZERO;
+            let mut variant_align = AbiAndPrefAlign { abi: Align::ONE, pref: Align::ONE };
+            for &field_idx in variant_fields {
+                let field_layout = &field_layouts[field_idx];
+                variant_size = variant_size.max(offsets[field_idx] + field_layout.size);
+                variant_align = variant_align.max(field_layout.align);
+            }
 
-            let FieldsShape::Arbitrary { offsets, memory_index } = variant.fields else {
-                bug!();
+            let variant = LayoutS {
+                variants: Variants::Single { index },
+                fields: FieldsShape::Arbitrary { offsets: variant_offsets, memory_index },
+                align: variant_align,
+                size: variant_size,
+                unadjusted_abi_align: variant_align.abi,
+                abi: Abi::Aggregate { sized: true },
+                largest_niche: None,
+                max_repr_align: None,
             };
 
-            // Now, stitch the promoted and variant-only fields back together in
-            // the order they are mentioned by our CoroutineLayout.
-            // Because we only use some subset (that can differ between variants)
-            // of the promoted fields, we can't just pick those elements of the
-            // `promoted_memory_index` (as we'd end up with gaps).
-            // So instead, we build an "inverse memory_index", as if all of the
-            // promoted fields were being used, but leave the elements not in the
-            // subset as `INVALID_FIELD_IDX`, which we can filter out later to
-            // obtain a valid (bijective) mapping.
-            const INVALID_FIELD_IDX: FieldIdx = FieldIdx::MAX;
-            debug_assert!(variant_fields.next_index() <= INVALID_FIELD_IDX);
-
-            let mut combined_inverse_memory_index = IndexVec::from_elem_n(
-                INVALID_FIELD_IDX,
-                promoted_memory_index.len() + memory_index.len(),
-            );
-            let mut offsets_and_memory_index = iter::zip(offsets, memory_index);
-            let combined_offsets = variant_fields
-                .iter_enumerated()
-                .map(|(i, local)| {
-                    let (offset, memory_index) = match assignments[*local] {
-                        Unassigned => bug!(),
-                        Assigned(_) => {
-                            let (offset, memory_index) = offsets_and_memory_index.next().unwrap();
-                            (offset, promoted_memory_index.len() as u32 + memory_index)
-                        }
-                        Ineligible(field_idx) => {
-                            let field_idx = field_idx.unwrap();
-                            (promoted_offsets[field_idx], promoted_memory_index[field_idx])
-                        }
-                    };
-                    combined_inverse_memory_index[memory_index] = i;
-                    offset
-                })
-                .collect();
-
-            // Remove the unused slots and invert the mapping to obtain the
-            // combined `memory_index` (also see previous comment).
-            combined_inverse_memory_index.raw.retain(|&i| i != INVALID_FIELD_IDX);
-            let combined_memory_index = combined_inverse_memory_index.invert_bijective_mapping();
-
-            variant.fields = FieldsShape::Arbitrary {
-                offsets: combined_offsets,
-                memory_index: combined_memory_index,
-            };
-
+            // Calc coroutine size/align.
             size = size.max(variant.size);
             align = align.max(variant.align);
-            Ok(variant)
+            variant
         })
-        .try_collect::<IndexVec<VariantIdx, _>>()?;
+        .collect::<IndexVec<VariantIdx, _>>();
 
     size = size.align_to(align.abi);
 
-    let abi = if prefix.abi.is_uninhabited() || variants.iter().all(|v| v.abi.is_uninhabited()) {
-        Abi::Uninhabited
-    } else {
-        Abi::Aggregate { sized: true }
-    };
+    // TODO
+    let abi = if false { Abi::Uninhabited } else { Abi::Aggregate { sized: true } };
 
     let layout = tcx.mk_layout(LayoutS {
         variants: Variants::Multiple {
             tag,
             tag_encoding: TagEncoding::Direct,
-            tag_field: tag_index,
+            tag_field: 0,
             variants,
         },
-        fields: outer_fields,
+        fields: FieldsShape::Arbitrary {
+            offsets: [offsets[tag_idx]].into(),
+            memory_index: [0].into(),
+        },
         abi,
-        largest_niche: prefix.largest_niche,
+        largest_niche: None, // TODO
         size,
         align,
         max_repr_align: None,

@@ -18,7 +18,7 @@ use std::fmt::{self, Debug};
 use super::{ConstValue, SourceInfo};
 
 rustc_index::newtype_index! {
-    #[derive(HashStable)]
+    #[derive(HashStable, Ord, PartialOrd)]
     #[encodable]
     #[debug_format = "_{}"]
     pub struct CoroutineSavedLocal {}
