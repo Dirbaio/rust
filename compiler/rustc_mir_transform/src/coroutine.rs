@@ -1099,7 +1099,7 @@ fn compute_layout<'tcx>(
         })
         .collect();
     debug!(?upvar_saved_locals, "dxf");
-    let storage_conflicts = if upvar_saved_locals.is_empty() {
+    let mut storage_conflicts = if upvar_saved_locals.is_empty() {
         storage_conflicts
     } else {
         let mut enlarged_storage_conflicts = BitMatrix::new(tys.len(), tys.len());
@@ -1158,6 +1158,14 @@ fn compute_layout<'tcx>(
 
         let saved_local = variant_fields[variant][field];
         field_names.get_or_insert_with(saved_local, || var.name);
+    }
+
+    for v in &variant_fields {
+        for &a in v {
+            for &b in v {
+                storage_conflicts.insert(a, b);
+            }
+        }
     }
 
     let layout = CoroutineLayout {
