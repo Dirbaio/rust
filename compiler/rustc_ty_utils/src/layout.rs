@@ -778,6 +778,17 @@ fn coroutine_layout<'tcx>(
         }
     }
 
+    assert!(placed.iter().all(|&x| x));
+    for a_idx in field_layouts.indices() {
+        for b_idx in field_layouts.indices() {
+            if a_idx != b_idx && conflicts(a_idx, b_idx) {
+                let a_range = offsets[a_idx]..(offsets[a_idx] + field_layouts[a_idx].size);
+                let b_range = offsets[b_idx]..(offsets[b_idx] + field_layouts[b_idx].size);
+                assert!(!overlaps(&a_range, &b_range));
+            }
+        }
+    }
+
     // coroutine size/align.
     let mut size = offsets[tag_idx] + field_layouts[tag_idx].size;
     let mut align = field_layouts[tag_idx].align;
