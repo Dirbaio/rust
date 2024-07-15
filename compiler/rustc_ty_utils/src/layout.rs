@@ -1050,36 +1050,11 @@ fn variant_info_for_coroutine<'tcx>(
     def_id: DefId,
     args: ty::GenericArgsRef<'tcx>,
 ) -> (Vec<VariantInfo>, Option<Size>) {
-    use itertools::Itertools;
-
     let Variants::Multiple { tag, ref tag_encoding, tag_field, .. } = layout.variants else {
         return (vec![], None);
     };
 
     let coroutine = cx.tcx.coroutine_layout(def_id, args.as_coroutine().kind_ty()).unwrap();
-    let upvar_names = cx.tcx.closure_saved_names_of_captured_variables(def_id);
-
-    let mut upvars_size = Size::ZERO;
-    let upvar_fields: Vec<_> = args
-        .as_coroutine()
-        .upvar_tys()
-        .iter()
-        .zip_eq(upvar_names)
-        .enumerate()
-        .map(|(field_idx, (_, name))| {
-            let field_layout = layout.field(cx, field_idx);
-            let offset = layout.fields.offset(field_idx);
-            upvars_size = upvars_size.max(offset + field_layout.size);
-            FieldInfo {
-                kind: FieldKind::Upvar,
-                name: *name,
-                offset: offset.bytes(),
-                size: field_layout.size.bytes(),
-                align: field_layout.align.abi.bytes(),
-                type_name: None,
-            }
-        })
-        .collect();
 
     let mut variant_infos: Vec<_> = coroutine
         .variant_fields
@@ -1111,13 +1086,7 @@ fn variant_info_for_coroutine<'tcx>(
                             .then(|| Symbol::intern(&field_layout.ty.to_string())),
                     }
                 })
-                .chain(upvar_fields.iter().copied())
                 .collect();
-
-            // If the variant has no state-specific fields, then it's the size of the upvars.
-            if variant_size == Size::ZERO {
-                variant_size = upvars_size;
-            }
 
             // This `if` deserves some explanation.
             //
