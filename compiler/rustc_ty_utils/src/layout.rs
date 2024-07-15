@@ -799,7 +799,10 @@ fn coroutine_layout<'tcx>(
         .map(|(index, variant_fields)| {
             let variant_offsets: IndexVec<FieldIdx, Size> =
                 variant_fields.iter().map(|&i| offsets[i]).collect();
-            let memory_index = (0..(variant_offsets.len() as u32)).collect(); // TODO
+            let mut inverse_memory_index: IndexVec<u32, FieldIdx> =
+                variant_offsets.indices().collect();
+            inverse_memory_index.raw.sort_by_key(|&i| offsets[variant_fields[i]]);
+            let memory_index = inverse_memory_index.invert_bijective_mapping();
 
             // Calc variant size/align from its fields.
             let mut variant_size = Size::ZERO;
