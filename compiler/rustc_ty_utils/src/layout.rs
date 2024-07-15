@@ -717,6 +717,10 @@ fn coroutine_layout<'tcx>(
     let tag_idx = CoroutineSavedLocal::from_usize(field_layouts.len());
     field_layouts.push(tag_layout);
 
+    for lay in &field_layouts {
+        assert!(lay.size.is_aligned(lay.align.abi));
+    }
+
     let conflicts = |a: CoroutineSavedLocal, b: CoroutineSavedLocal| -> bool {
         if a == tag_idx || b == tag_idx {
             // the tag conflicts with all other fields.
