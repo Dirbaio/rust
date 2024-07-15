@@ -757,7 +757,7 @@ fn coroutine_layout<'tcx>(
     while let Some((a_offs, _, a_idx)) = queue.pop_first() {
         // mark the field as placed.
         placed[a_idx] = true;
-        tracing::info!("placed {:?} at {:?}", a_idx, a_offs);
+        tracing::warn!("placed {:?} at {:?}", a_idx, a_offs);
         // for all the fields we haven't placed yet, if they conflict with the one we just placed,
         // update their lowest possible offset.
         let a_range = a_offs..(a_offs + field_layouts[a_idx].size);
@@ -772,21 +772,80 @@ fn coroutine_layout<'tcx>(
                     assert!(queue.remove(&(b_offs, priority(b_idx), b_idx)));
                     queue.insert((b_offs_new, priority(b_idx), b_idx));
                     offsets[b_idx] = b_offs_new;
-                    tracing::info!("bumped {:?} from {:?} to {:?}", b_idx, b_offs, b_offs_new);
+                    tracing::warn!("bumped {:?} from {:?} to {:?}", b_idx, b_offs, b_offs_new);
                 }
             }
         }
     }
 
     assert!(placed.iter().all(|&x| x));
+    let mut bad = false;
     for a_idx in field_layouts.indices() {
+        bad |= !offsets[a_idx].is_aligned(field_layouts[a_idx].align.abi);
+
         for b_idx in field_layouts.indices() {
             if a_idx != b_idx && conflicts(a_idx, b_idx) {
                 let a_range = offsets[a_idx]..(offsets[a_idx] + field_layouts[a_idx].size);
                 let b_range = offsets[b_idx]..(offsets[b_idx] + field_layouts[b_idx].size);
-                assert!(!overlaps(&a_range, &b_range));
+                bad |= overlaps(&a_range, &b_range);
             }
         }
+    }
+
+    if bad {
+        tracing::warn!("coroutine: {:#?}", instantiate_field(ty));
+        tracing::warn!("coroutine layout: {:#?}", info);
+        for (i, layout) in field_layouts.iter_enumerated() {
+            tracing::warn!("  field {:?}:", i);
+            if let Some(ty) = info.field_tys.get(i) {
+                tracing::warn!("    ty {:?}", instantiate_field(ty.ty));
+            } else {
+                tracing::warn!("    tag");
+            }
+            tracing::warn!("    size {:?}", layout.size);
+            tracing::warn!("    align {:?}", layout.align);
+            tracing::warn!("    offset: {:?}", offsets[i]);
+        }
+        //tracing::warn!("coroutine calculated layout: {:#?}", layout);
+
+        #[derive(serde::Serialize)]
+        struct JsonField {
+            size: u64,
+            align: u64,
+        }
+        #[derive(serde::Serialize)]
+        struct Json {
+            fields: Vec<JsonField>,
+            variants: Vec<Vec<usize>>,
+            field_conflicts: Vec<Vec<usize>>,
+            orig_size: u64,
+        }
+
+        let j = Json {
+            fields: info
+                .field_tys
+                .iter()
+                .map(|f| {
+                    let field_ty = instantiate_field(f.ty);
+                    let lay = cx.layout_of(Ty::new_maybe_uninit(tcx, field_ty)).unwrap();
+                    JsonField { size: lay.size.bytes(), align: lay.align.abi.bytes() }
+                })
+                .collect(),
+            variants: info
+                .variant_fields
+                .iter()
+                .map(|v| v.iter().map(|x| x.as_usize()).collect())
+                .collect(),
+            field_conflicts: info
+                .storage_conflicts
+                .rows()
+                .map(|r| info.storage_conflicts.iter(r).map(|c| c.as_usize()).collect())
+                .collect(),
+            orig_size: 0,
+        };
+        tracing::warn!("$$JSON$$ {}", serde_json::to_string(&j).unwrap());
+
+        panic!("boom");
     }
 
     // coroutine size/align.
