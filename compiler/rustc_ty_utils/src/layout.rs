@@ -809,6 +809,7 @@ fn coroutine_layout<'tcx>(
                 variant_size = variant_size.max(offsets[field_idx] + field_layout.size);
                 variant_align = variant_align.max(field_layout.align);
             }
+            variant_size = variant_size.align_to(variant_align.abi);
 
             let variant = LayoutS {
                 variants: Variants::Single { index },
